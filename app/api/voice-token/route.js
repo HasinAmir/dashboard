@@ -9,10 +9,10 @@ export const runtime = 'nodejs';
  * require for any client-side (browser/mobile) connection.
  */
 export async function GET() {
-    const apiKey = process.env.ASSEMBLYAI_API_KEY;
+    const apiKey = process.env.ASSEMBLYAI_API_KEY || process.env.ASSEMBLY_API_KEY;
     if (!apiKey) {
         return Response.json(
-            { error: 'ASSEMBLYAI_API_KEY is not set' },
+            { error: 'ASSEMBLYAI_API_KEY is not set in .env.local' },
             { status: 500 }
         );
     }

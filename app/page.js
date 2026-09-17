@@ -6,7 +6,33 @@ import VoiceAgent from '@/components/VoiceAgent';
 export default function Home() {
   const [status, setStatus] = useState('idle'); // idle | loading | playing | error
   const [errorMsg, setErrorMsg] = useState('');
+  const [detectedLocation, setDetectedLocation] = useState('');
   const audioCtxRef = useRef(null);
+  const coordsRef = useRef(null);
+
+  const getCoordinates = () => {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined' || !navigator.geolocation) {
+        return resolve(coordsRef.current || null);
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+          };
+          coordsRef.current = coords;
+          if (typeof window !== 'undefined') window.__DAWNCAST_COORDS__ = coords;
+          resolve(coords);
+        },
+        (err) => {
+          console.warn('Geolocation lookup skipped or denied:', err.message);
+          resolve(coordsRef.current || null);
+        },
+        { timeout: 5000, enableHighAccuracy: true }
+      );
+    });
+  };
 
   const isEarlyMorning = () => {
     const hour = new Date().getHours();
@@ -17,10 +43,24 @@ export default function Home() {
     setStatus('loading');
     setErrorMsg('');
     try {
-      const res = await fetch('/api/briefing');
+      // Attempt GPS coordinates, falling back gracefully if denied or unavailable
+      const coords = coordsRef.current || (await getCoordinates());
+      const params = new URLSearchParams();
+      if (coords?.lat && coords?.lon) {
+        params.set('lat', coords.lat);
+        params.set('lon', coords.lon);
+      }
+      const url = `/api/briefing${params.toString() ? `?${params.toString()}` : ''}`;
+
+      const res = await fetch(url);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Request failed (${res.status})`);
+      }
+
+      const locHeader = res.headers.get('X-Detected-Location');
+      if (locHeader) {
+        setDetectedLocation(decodeURIComponent(locHeader));
       }
 
       const sampleRate = parseInt(res.headers.get('X-Sample-Rate') || '24000', 10);
@@ -88,8 +128,23 @@ export default function Home() {
     }
   }
 
-  // Auto-attempt playback if opened during the early-morning window.
+  // Pre-request GPS in background so playback starts quickly when requested
   useEffect(() => {
+    if (typeof window !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+          };
+          coordsRef.current = coords;
+          if (typeof window !== 'undefined') window.__DAWNCAST_COORDS__ = coords;
+        },
+        () => {},
+        { timeout: 6000, enableHighAccuracy: true }
+      );
+    }
+
     if (isEarlyMorning()) {
       playBriefing();
     }
@@ -141,6 +196,25 @@ export default function Home() {
           ? '🔊 Speaking…'
           : '▶ Play Today\u2019s Briefing'}
       </button>
+
+      {detectedLocation && (
+        <div
+          style={{
+            fontSize: '0.88rem',
+            opacity: 0.9,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.35rem',
+            background: 'rgba(255, 255, 255, 0.12)',
+            padding: '0.35rem 0.85rem',
+            borderRadius: '999px',
+            marginTop: '-0.25rem',
+          }}
+        >
+          <span>📍</span>
+          <span>{detectedLocation}</span>
+        </div>
+      )}
 
       {status === 'error' && (
         <p style={{ color: '#F2A5A5', maxWidth: 320 }}>

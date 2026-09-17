@@ -24,8 +24,15 @@ export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
         const location = searchParams.get('location');
+        const lat = searchParams.get('lat') || request.headers.get('x-vercel-ip-latitude');
+        const lon = searchParams.get('lon') || request.headers.get('x-vercel-ip-longitude');
+        const ipCity = request.headers.get('x-vercel-ip-city');
 
-        weather = await getWeather(location);
+        weather = await getWeather({
+            location: location || (!lat && ipCity ? decodeURIComponent(ipCity) : null),
+            lat,
+            lon,
+        });
         alerts = await getDisasterAlerts(weather.country);
         script = buildBriefingScript(
             { ...weather, location: weather.resolved_location },
@@ -39,10 +46,10 @@ export async function GET(request) {
         );
     }
 
-    const apiKey = process.env.ASSEMBLYAI_API_KEY;
+    const apiKey = process.env.ASSEMBLYAI_API_KEY || process.env.ASSEMBLY_API_KEY;
     if (!apiKey) {
         return Response.json(
-            { error: 'Failed to generate briefing', detail: 'ASSEMBLYAI_API_KEY is not set' },
+            { error: 'Failed to generate briefing', detail: 'ASSEMBLYAI_API_KEY is not set in .env.local' },
             { status: 500 }
         );
     }
@@ -124,6 +131,7 @@ export async function GET(request) {
             'Content-Type': 'application/octet-stream',
             'Cache-Control': 'no-store',
             'X-Sample-Rate': String(RATE),
+            'X-Detected-Location': encodeURIComponent(weather?.resolved_location || ''),
         },
     });
 }

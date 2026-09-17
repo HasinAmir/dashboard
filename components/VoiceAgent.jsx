@@ -6,7 +6,7 @@ const RATE = 24000; // must match session config below
 const PROMPT = `
 You are DawnCast, a calm, friendly spoken weather assistant.
 Always call get_weather before answering a weather question. Never guess.
-If no location is given, omit location; the tool defaults to Sylhet, Bangladesh.
+If no location is given, omit location; the tool automatically detects the user's current location.
 Reuse fetched data for same-location follow-ups unless the time changes notably.
 
 When summarizing weather, always give a concise, natural response and include practical daily advice based on the conditions:
@@ -25,7 +25,7 @@ const TOOLS = [
         name: 'get_weather',
         description:
             'Get current conditions and active alerts. Always use for weather ' +
-            'questions; omit location to default to Sylhet, Bangladesh.',
+            "questions; omit location to default to the user's current location.",
         parameters: {
             type: 'object',
             properties: {
@@ -41,7 +41,12 @@ const TOOLS = [
 
 async function fetchWeatherTool(location) {
     const params = new URLSearchParams();
-    if (location) params.set('location', location);
+    if (location) {
+        params.set('location', location);
+    } else if (typeof window !== 'undefined' && window.__DAWNCAST_COORDS__) {
+        params.set('lat', window.__DAWNCAST_COORDS__.lat);
+        params.set('lon', window.__DAWNCAST_COORDS__.lon);
+    }
 
     const res = await fetch(`/api/weather?${params.toString()}`);
     if (!res.ok) throw new Error(`Weather request failed: ${res.status}`);

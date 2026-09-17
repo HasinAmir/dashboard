@@ -11,8 +11,15 @@ export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
         const location = searchParams.get('location');
+        const lat = searchParams.get('lat') || request.headers.get('x-vercel-ip-latitude');
+        const lon = searchParams.get('lon') || request.headers.get('x-vercel-ip-longitude');
+        const ipCity = request.headers.get('x-vercel-ip-city');
 
-        const weather = await getWeather(location);
+        const weather = await getWeather({
+            location: location || (!lat && ipCity ? decodeURIComponent(ipCity) : null),
+            lat,
+            lon,
+        });
         let alerts = [];
         try {
             alerts = await getDisasterAlerts(weather.country);
