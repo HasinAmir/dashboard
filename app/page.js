@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import VoiceAgent from '@/components/VoiceAgent';
+import BriefingToggle from '@/components/BriefingToggle';
 
 export default function Home() {
   const [status, setStatus] = useState('idle'); // idle | loading | playing | error
@@ -140,7 +141,7 @@ export default function Home() {
           coordsRef.current = coords;
           if (typeof window !== 'undefined') window.__DAWNCAST_COORDS__ = coords;
         },
-        () => {},
+        () => { },
         { timeout: 6000, enableHighAccuracy: true }
       );
     }
@@ -193,9 +194,11 @@ export default function Home() {
         {status === 'loading'
           ? 'Connecting…'
           : status === 'playing'
-          ? '🔊 Speaking…'
-          : '▶ Play Today\u2019s Briefing'}
+            ? '🔊 Speaking…'
+            : '▶ Play Today\u2019s Briefing'}
       </button>
+
+      <BriefingToggle />
 
       {detectedLocation && (
         <div
