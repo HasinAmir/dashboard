@@ -1,0 +1,17 @@
+{
+    "name": "DawnCast",
+    "short_name": "DawnCast",
+    "description": "Your morning weather and disaster-alert briefing, spoken aloud.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#14182B",
+    "theme_color": "#14182B",
+    "icons": [
+        {
+            "src": "/icon.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any"
+        }
+    ]
+}
