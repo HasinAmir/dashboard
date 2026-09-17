@@ -6,16 +6,16 @@ const RATE = 24000; // must match session config below
 const PROMPT = `
 You are DawnCast, a calm, friendly spoken weather assistant.
 Always call get_weather before answering a weather question. Never guess.
-If no location is given, omit location; the tool automatically detects the user's current location.
-Reuse fetched data for same-location follow-ups unless the time changes notably.
-
-When summarizing weather, always give a concise, natural response and include practical daily advice based on the conditions:
-- If chilly or cold (below 17°C / 63°F, or low temperatures), remind them to wear or take a sweater or jacket outside.
-- If rain is likely (rain chance 30% or higher, or rainy conditions), remind them to take an umbrella.
-- If it is hot (above 27°C / 80°F) or bright sunny weather, remind them to stay in the shade when possible and carry a bottle of water to stay hydrated.
-
-For active_alert=false, keep it to 2-3 friendly sentences covering temperature, feel, rain chance, and the relevant preparation advice.
-For active_alert=true, lead immediately with the alert type in a direct, serious, steady tone, then give key conditions and safety precautions.
+If no location is given, omit location; the tool defaults to Sylhet, Bangladesh.
+If asked about tomorrow, pass day="tomorrow"; otherwise omit day (defaults to today).
+A "today" result's temperature_c is the live current reading right now --
+speak it as such (e.g. "it's currently X degrees"), not as a static daily summary.
+A "tomorrow" result has no current reading (temperature_c is null) -- describe
+only the expected high, low, and rain chance for tomorrow instead.
+Reuse fetched data for same-location, same-day follow-ups unless the time
+changes notably or the user asks about a different day.
+For active_alert=false, give 2-3 short sentences. For active_alert=true, lead
+immediately with the alert type in a direct, serious tone, then key conditions.
 Never read JSON, field names, or technical details. Do not use markdown.
 `;
 
@@ -24,8 +24,8 @@ const TOOLS = [
         type: 'function',
         name: 'get_weather',
         description:
-            'Get current conditions and active alerts. Always use for weather ' +
-            "questions; omit location to default to the user's current location.",
+            'Get conditions and active alerts for today or tomorrow. Always use ' +
+            'for weather questions; omit location to default to Sylhet, Bangladesh.',
         parameters: {
             type: 'object',
             properties: {
@@ -33,20 +33,21 @@ const TOOLS = [
                     type: 'string',
                     description: 'Named city or country, for example Tokyo, Japan.',
                 },
+                day: {
+                    type: 'string',
+                    enum: ['today', 'tomorrow'],
+                    description: 'Which day to check. Omit for today.',
+                },
             },
             required: [],
         },
     },
 ];
 
-async function fetchWeatherTool(location) {
+async function fetchWeatherTool(location, day) {
     const params = new URLSearchParams();
-    if (location) {
-        params.set('location', location);
-    } else if (typeof window !== 'undefined' && window.__DAWNCAST_COORDS__) {
-        params.set('lat', window.__DAWNCAST_COORDS__.lat);
-        params.set('lon', window.__DAWNCAST_COORDS__.lon);
-    }
+    if (location) params.set('location', location);
+    if (day) params.set('day', day);
 
     const res = await fetch(`/api/weather?${params.toString()}`);
     if (!res.ok) throw new Error(`Weather request failed: ${res.status}`);
@@ -57,6 +58,7 @@ async function fetchWeatherTool(location) {
 
     return {
         location: data.location,
+        day: data.day,
         condition: data.condition,
         temperature_c: data.temperature_c,
         high_c: data.high_c,
@@ -202,7 +204,7 @@ export default function VoiceAgent() {
                         try {
                             if (msg.name !== 'get_weather') throw new Error('Unknown tool');
                             const args = msg.arguments || {};
-                            const result = await fetchWeatherTool(args.location);
+                            const result = await fetchWeatherTool(args.location, args.day);
                             ws.send(
                                 JSON.stringify({
                                     type: 'tool.result',

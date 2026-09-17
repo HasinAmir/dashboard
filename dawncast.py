@@ -18,31 +18,27 @@ WEATHER_TOOL_URL = os.environ.get(
 )
 
 PROMPT = """
-You are DawnCast, a warm, friendly, conversational spoken weather assistant — think of a knowledgeable friend, not a robot.
-
-Your personality:
-- Start each session by warmly greeting the user by first name (Hasin) and asking for their location.
-- When you don't understand something, politely acknowledge it and gently redirect: "I'm not sure about that, but I can definitely help with weather!"
-- Respond naturally to greetings, small talk, and thanks — don't jump straight to weather data if someone just says "Hi".
-- When asked about weather, always call get_weather first, then speak naturally using this structure:
-  1. Current temperature in degrees Celsius (high and low), and sky condition.
-  2. Comfort check — is it too hot (32°C+, advise hydration & shade) or too cold (10°C-, advise warm layers)?
-  3. Rain advice — state rain probability and whether to carry an umbrella.
-  4. Hazard briefing — if active, name the abbreviation (TC = Tropical Cyclone, FL = Flood, EQ = Earthquake, EXT-HEAT = Heatwave) and advise caution. If none, confirm all clear.
-
-Tone rules:
-- Sound warm and human — use contractions, natural phrasing, and occasional light humour.
-- Acknowledge what you heard before answering: "Sure, let me check that for you..." or "Great question!"
-- Never read raw field names, JSON, or technical data. No markdown.
-- Keep responses concise but complete — don't over-explain.
+You are DawnCast, a calm, friendly spoken weather assistant.
+Always call get_weather before answering a weather question. Never guess.
+If no location is given, omit location; the tool defaults to Sylhet, Bangladesh.
+If asked about tomorrow, pass day="tomorrow"; otherwise omit day (defaults to today).
+A "today" result's temperature_c is the live current reading right now --
+speak it as such (e.g. "it's currently X degrees"), not as a static daily summary.
+A "tomorrow" result has no current reading (temperature_c is null) -- describe
+only the expected high, low, and rain chance for tomorrow instead.
+Reuse fetched data for same-location, same-day follow-ups unless the time
+changes notably or the user asks about a different day.
+For active_alert=false, give 2-3 short sentences. For active_alert=true, lead
+immediately with the alert type in a direct, serious tone, then key conditions.
+Never read JSON, field names, or technical details. Do not use markdown.
 """
 
 TOOLS = [{
     "type": "function",
     "name": "get_weather",
     "description": (
-        "Get current conditions and active alerts. Always use for weather "
-        "questions; omit location to default to Sylhet, Bangladesh."
+        "Get conditions and active alerts for today or tomorrow. Always use "
+        "for weather questions; omit location to default to Sylhet, Bangladesh."
     ),
     "parameters": {
         "type": "object",
@@ -50,6 +46,11 @@ TOOLS = [{
             "location": {
                 "type": "string",
                 "description": "Named city or country, for example Tokyo, Japan."
+            },
+            "day": {
+                "type": "string",
+                "enum": ["today", "tomorrow"],
+                "description": "Which day to check. Omit for today."
             }
         },
         "required": []
@@ -57,10 +58,14 @@ TOOLS = [{
 }]
 
 
-async def get_weather(location=None):
+async def get_weather(location=None, day=None):
     """Calls DawnCast's real weather+alerts endpoint (Next.js on Vercel),
     which pulls live data from OpenWeatherMap and GDACS."""
-    params = {"location": location} if location else {}
+    params = {}
+    if location:
+        params["location"] = location
+    if day:
+        params["day"] = day
 
     async with aiohttp.ClientSession() as session:
         async with session.get(WEATHER_TOOL_URL, params=params, timeout=15) as resp:
@@ -73,6 +78,7 @@ async def get_weather(location=None):
 
     return {
         "location": data.get("location"),
+        "day": data.get("day"),
         "condition": data.get("condition"),
         "temperature_c": data.get("temperature_c"),
         "high_c": data.get("high_c"),
@@ -106,7 +112,7 @@ async def main():
             "type": "session.update",
             "session": {
                 "system_prompt": PROMPT,
-                "greeting": "Hello Hasin. What's up?",
+                "greeting": "Good morning. Which place should I check?",
                 "tools": TOOLS,
                 "input": {
                     "format": {"encoding": "audio/pcm", "sample_rate": RATE},
@@ -176,7 +182,7 @@ async def main():
                             if event.get("name") != "get_weather":
                                 raise ValueError("Unknown tool")
                             args = event.get("arguments") or {}
-                            result = await get_weather(args.get("location"))
+                            result = await get_weather(args.get("location"), args.get("day"))
                             pending_results.append({
                                 "type": "tool.result",
                                 "call_id": event["call_id"],
