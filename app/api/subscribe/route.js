@@ -1,4 +1,9 @@
-import { kv } from '@vercel/kv';
+import { Redis } from '@upstash/redis';
+
+const redis = new Redis({
+    url: process.env.dawncast_KV_REST_API_URL,
+    token: process.env.dawncast_KV_REST_API_TOKEN,
+});
 
 const SUBSCRIPTION_KEY = 'push-subscription';
 
@@ -9,11 +14,11 @@ export async function POST(request) {
         return Response.json({ error: 'Invalid subscription payload' }, { status: 400 });
     }
 
-    await kv.set(SUBSCRIPTION_KEY, subscription);
+    await redis.set(SUBSCRIPTION_KEY, subscription);
     return Response.json({ ok: true });
 }
 
 export async function DELETE() {
-    await kv.del(SUBSCRIPTION_KEY);
+    await redis.del(SUBSCRIPTION_KEY);
     return Response.json({ ok: true });
 }

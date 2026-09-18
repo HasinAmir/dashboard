@@ -1,11 +1,12 @@
 import WebSocket from 'ws';
 import { getWeather } from '@/lib/openweather';
 import { getDisasterAlerts } from '@/lib/gdacs';
+import { getRecentEarthquakes } from '@/lib/earthquakes';
 import { buildBriefingScript } from '@/lib/buildBriefingScript';
 
 // This route needs the Node.js runtime (not Edge) to use the `ws` package.
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const RATE = 24000; // must match the sample rate we request from AssemblyAI
 
@@ -33,10 +34,27 @@ export async function GET(request) {
             lat,
             lon,
         });
-        alerts = await getDisasterAlerts(weather.country);
+        // Earthquake info is nice-to-have -- a USGS hiccup must not
+        // take down the briefing.
+        let earthquakes = [];
+        try {
+            earthquakes = await getRecentEarthquakes({
+                lat: weather.resolved_lat,
+                lon: weather.resolved_lon,
+            });
+        } catch (err) {
+            console.error('Earthquake fetch failed (continuing without it):', err);
+        }
+        alerts = [];
+        try {
+            alerts = await getDisasterAlerts(weather.country);
+        } catch (err) {
+            console.error('GDACS alert fetch failed (continuing without it):', err);
+        }
         script = buildBriefingScript(
             { ...weather, location: weather.resolved_location },
-            alerts
+            alerts,
+            earthquakes
         );
     } catch (err) {
         console.error('Error preparing briefing script:', err);
@@ -53,29 +71,56 @@ export async function GET(request) {
             { status: 500 }
         );
     }
+    console.log('[DawnCast] API key present, length:', apiKey.length);
 
+    let finishStream;
     const stream = new ReadableStream({
         start(controller) {
             let closed = false;
+            let inactivityTimer = null;
+
+            const resetInactivity = (ms = 15000) => {
+                clearTimeout(inactivityTimer);
+                if (closed) return;
+                inactivityTimer = setTimeout(() => {
+                    if (closed) return;
+                    console.error(`[DawnCast] Stream timed out after ${ms}ms of inactivity`);
+                    try { ws.terminate(); } catch { }
+                    finish(new Error('Timed out waiting for speech synthesis'));
+                }, ms);
+            };
+
             const finish = (err) => {
                 if (closed) return;
                 closed = true;
-                clearTimeout(timeout);
-                try { ws.close(); } catch { }
-                if (err) controller.error(err);
-                else controller.close();
+                clearTimeout(inactivityTimer);
+                try {
+                    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                        ws.close();
+                    }
+                } catch { }
+                try {
+                    if (err) {
+                        console.error('[DawnCast] Finishing with error:', err.message);
+                        controller.error(err);
+                    } else {
+                        console.log('[DawnCast] Finishing successfully');
+                        controller.close();
+                    }
+                } catch { }
             };
+            finishStream = finish;
 
+            console.log('[DawnCast] Creating WebSocket connection to AssemblyAI...');
             const ws = new WebSocket('wss://agents.assemblyai.com/v1/ws', {
                 headers: { Authorization: `Bearer ${apiKey}` },
             });
 
-            const timeout = setTimeout(() => {
-                ws.terminate();
-                finish(new Error('Timed out waiting for speech synthesis'));
-            }, 25000);
+            // Initial timeout: allow up to 25s for connection and initial reply
+            resetInactivity(25000);
 
             ws.on('open', () => {
+                console.log('[DawnCast] WebSocket OPEN — sending session.update');
                 ws.send(
                     JSON.stringify({
                         type: 'session.update',
@@ -83,7 +128,7 @@ export async function GET(request) {
                             greeting: script,
                             system_prompt: 'Speak only the greeting. Do not add anything else.',
                             input: {
-                                format: { encoding: 'audio/pcm', sample_rate: RATE },
+                                format: { encoding: 'audio/pcm' },
                                 transcription_mode: 'balanced',
                                 turn_detection: {
                                     vad_threshold: 0.5,
@@ -94,34 +139,79 @@ export async function GET(request) {
                             },
                             output: {
                                 voice: 'alba',
-                                format: { encoding: 'audio/pcm', sample_rate: RATE },
+                                format: { encoding: 'audio/pcm' },
                             },
                         },
                     })
                 );
+                console.log('[DawnCast] session.update sent');
             });
 
             ws.on('message', (raw) => {
+                if (closed) return;
+                // As long as AssemblyAI is actively sending chunks, keep the stream alive
+                resetInactivity(15000);
+
                 let event;
                 try {
                     event = JSON.parse(raw.toString());
                 } catch {
+                    console.log('[DawnCast] Received non-JSON message, ignoring');
                     return;
                 }
+
+                console.log('[DawnCast] Received event type:', event.type);
 
                 if (event.type === 'reply.audio') {
                     // Push this chunk straight through to the client immediately --
                     // no buffering, no waiting for the rest of the speech.
-                    controller.enqueue(Buffer.from(event.data, 'base64'));
+                    if (closed) return;
+                    try {
+                        controller.enqueue(Buffer.from(event.data, 'base64'));
+                    } catch (err) {
+                        console.warn('[DawnCast] Enqueue failed (stream closed/cancelled):', err.message);
+                        finish();
+                    }
                 } else if (event.type === 'reply.done') {
+                    console.log('[DawnCast] reply.done received, status:', event.status);
                     finish();
+                } else if (event.type === 'session.error') {
+                    // AssemblyAI rejects a bad session.update with `session.error`
+                    // and KEEPS the socket open -- so without this branch the
+                    // request would silently hang until the 25s timeout.
+                    finish(
+                        new Error(
+                            `AssemblyAI session error (${event.code || 'unknown'}): ${event.message || 'session rejected'}`
+                        )
+                    );
                 } else if (event.type === 'error') {
                     finish(new Error(event.message || 'AssemblyAI returned an error'));
                 }
             });
 
-            ws.on('error', (err) => finish(err));
-            ws.on('close', () => finish());
+            ws.on('error', (err) => {
+                console.error('[DawnCast] WebSocket ERROR event:', err.message);
+                finish(err);
+            });
+
+            ws.on('close', (code, reason) => {
+                console.log('[DawnCast] WebSocket CLOSED — code:', code, 'reason:', reason?.toString());
+                finish();
+            });
+
+            ws.on('unexpected-response', (req, res) => {
+                console.error('[DawnCast] Unexpected response during handshake — status:', res.statusCode);
+                let body = '';
+                res.on('data', (chunk) => { body += chunk; });
+                res.on('end', () => {
+                    console.error('[DawnCast] Handshake response body:', body);
+                    finish(new Error(`WebSocket handshake failed with status ${res.statusCode}: ${body}`));
+                });
+            });
+        },
+        cancel() {
+            console.log('[DawnCast] ReadableStream cancelled by consumer');
+            if (finishStream) finishStream();
         },
     });
 

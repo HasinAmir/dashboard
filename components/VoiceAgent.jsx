@@ -16,6 +16,10 @@ Reuse fetched data for same-location, same-day follow-ups unless the time
 changes notably or the user asks about a different day.
 For active_alert=false, give 2-3 short sentences. For active_alert=true, lead
 immediately with the alert type in a direct, serious tone, then key conditions.
+If air_quality is present, mention it when it's Moderate or worse (label field).
+If nearby_earthquakes is non-empty, mention the largest/most recent quake with
+its magnitude and distance in a calm, informative way (e.g. "a 4.1 magnitude
+quake, 40 km away, three hours ago"). Only mention tsunami risk if tsunami=1.
 Never read JSON, field names, or technical details. Do not use markdown.
 `;
 
@@ -46,7 +50,17 @@ const TOOLS = [
 
 async function fetchWeatherTool(location, day) {
     const params = new URLSearchParams();
-    if (location) params.set('location', location);
+    if (location) {
+        params.set('location', location);
+    } else if (typeof window !== 'undefined' && window.__DAWNCAST_COORDS__) {
+        if (window.__DAWNCAST_COORDS__.lat && window.__DAWNCAST_COORDS__.lon) {
+            params.set('lat', window.__DAWNCAST_COORDS__.lat);
+            params.set('lon', window.__DAWNCAST_COORDS__.lon);
+        }
+        if (window.__DAWNCAST_COORDS__.city) {
+            params.set('location', window.__DAWNCAST_COORDS__.city);
+        }
+    }
     if (day) params.set('day', day);
 
     const res = await fetch(`/api/weather?${params.toString()}`);
@@ -55,6 +69,8 @@ async function fetchWeatherTool(location, day) {
 
     const alerts = data.alerts || [];
     const top = alerts[0];
+    const quake = (data.earthquakes || [])[0];
+    const aq = data.air_quality;
 
     return {
         location: data.location,
@@ -67,6 +83,24 @@ async function fetchWeatherTool(location, day) {
         active_alert: data.active_alert || false,
         alert_type: top ? top.type : null,
         alert_summary: top ? top.description : null,
+        air_quality: aq
+            ? {
+                  aqi: aq.aqi,
+                  label: aq.label,
+                  dominant_pollutant: aq.dominant_pollutant,
+              }
+            : null,
+        nearby_earthquakes: quake
+            ? [
+                  {
+                      mag: quake.mag,
+                      place: quake.place,
+                      distance_km: quake.distance_km,
+                      time_ago: quake.time_ago,
+                      tsunami: quake.tsunami,
+                  },
+              ]
+            : [],
     };
 }
 
@@ -156,7 +190,7 @@ export default function VoiceAgent() {
                             greeting: 'Good morning. Which place should I check?',
                             tools: TOOLS,
                             input: {
-                                format: { encoding: 'audio/pcm', sample_rate: RATE },
+                                format: { encoding: 'audio/pcm' },
                                 transcription_mode: 'balanced',
                                 turn_detection: {
                                     vad_threshold: 0.5,
@@ -167,7 +201,7 @@ export default function VoiceAgent() {
                             },
                             output: {
                                 voice: 'alba',
-                                format: { encoding: 'audio/pcm', sample_rate: RATE },
+                                format: { encoding: 'audio/pcm' },
                             },
                         },
                     })
